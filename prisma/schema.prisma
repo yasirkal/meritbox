@@ -1,0 +1,370 @@
+// Meritbox data model.
+// Multi-tenancy: every tenant-owned row carries organizationId and every query in
+// src/lib goes through helpers that scope by it. See docs/ARCHITECTURE.md.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum OrgType {
+  UNIVERSITY
+  TAFE
+  RTO
+  PROFESSIONAL_BODY
+  EMPLOYER
+  OTHER
+}
+
+enum Role {
+  OWNER
+  ADMIN
+  ISSUER
+  VIEWER
+}
+
+enum KeyAlg {
+  RS256
+  EdDSA
+}
+
+enum KeyStatus {
+  ACTIVE
+  RETIRED
+}
+
+enum AchievementStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum Visibility {
+  LINK
+  PRIVATE
+}
+
+model Organization {
+  id           String   @id @default(uuid())
+  slug         String   @unique
+  name         String
+  type         OrgType  @default(OTHER)
+  abn          String?
+  rtoCode      String?
+  cricosCode   String?
+  teqsaId      String?
+  website      String?
+  email        String?
+  description  String?
+  brandColor   String   @default("#0f4c81")
+  requireMfa   Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  memberships   Membership[]
+  keys          SigningKey[]
+  achievements  Achievement[]
+  credentials   Credential[]
+  statusLists   StatusList[]
+  batches       IssuanceBatch[]
+  apiKeys       ApiKey[]
+  auditLogs     AuditLog[]
+  pathways      Pathway[]
+  webhooks      Webhook[]
+  invites       Invite[]
+}
+
+model User {
+  id              String    @id @default(uuid())
+  email           String    @unique
+  name            String
+  passwordHash    String?
+  totpSecretEnc   String?
+  totpEnabled     Boolean   @default(false)
+  emailVerifiedAt DateTime?
+  failedLogins    Int       @default(0)
+  lockedUntil     DateTime?
+  createdAt       DateTime  @default(now())
+
+  memberships Membership[]
+  sessions    Session[]
+  credentials Credential[] @relation("Recipient")
+}
+
+model Membership {
+  id             String       @id @default(uuid())
+  userId         String
+  organizationId String
+  role           Role
+  createdAt      DateTime     @default(now())
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, organizationId])
+}
+
+model Invite {
+  id             String       @id @default(uuid())
+  organizationId String
+  email          String
+  role           Role
+  tokenHash      String       @unique
+  expiresAt      DateTime
+  acceptedAt     DateTime?
+  createdAt      DateTime     @default(now())
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+}
+
+model Session {
+  id          String   @id @default(uuid())
+  tokenHash   String   @unique
+  userId      String
+  mfaVerified Boolean  @default(false)
+  activeOrgId String?
+  ip          String?
+  userAgent   String?
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+/// One-time tokens for passwordless learner sign-in and credential claiming.
+model LoginToken {
+  id        String    @id @default(uuid())
+  email     String
+  tokenHash String    @unique
+  purpose   String
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([email])
+}
+
+model SigningKey {
+  id                  String       @id @default(uuid())
+  organizationId      String
+  kid                 String
+  alg                 KeyAlg
+  publicJwk           Json
+  encryptedPrivateJwk String
+  status              KeyStatus    @default(ACTIVE)
+  createdAt           DateTime     @default(now())
+  retiredAt           DateTime?
+  organization        Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, kid])
+}
+
+model Achievement {
+  id                    String            @id @default(uuid())
+  organizationId        String
+  name                  String
+  description           String
+  criteria              String
+  achievementType       String            @default("MicroCredential")
+  status                AchievementStatus @default(DRAFT)
+  // National Microcredentials Framework (2022) information
+  volumeOfLearningHours Int?
+  aqfLevel              Int?
+  assessmentType        String?
+  deliveryMode          String?
+  creditRecognition     String?
+  industryEndorsement   String?
+  creditPoints          Decimal?          @db.Decimal(6, 2)
+  // training.gov.au alignment (VET)
+  tgaCode               String?
+  tgaTitle              String?
+  fieldOfStudy          String?
+  skills                Json              @default("[]")
+  tags                  String[]          @default([])
+  // design
+  badgeShape            String            @default("hexagon")
+  badgeColor            String            @default("#0f4c81")
+  badgeAccent           String            @default("#f2a900")
+  badgeIcon             String            @default("star")
+  expiresAfterDays      Int?
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
+
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  credentials  Credential[]
+  pathwaySteps PathwayStep[]
+  rewardFor    Pathway[]     @relation("PathwayReward")
+
+  @@index([organizationId])
+}
+
+model Credential {
+  id               String       @id @default(uuid())
+  organizationId   String
+  achievementId    String
+  recipientEmail   String
+  recipientName    String
+  recipientUserId  String?
+  /// AES-256-GCM encrypted Unique Student Identifier
+  usiEnc           String?
+  /// HMAC blind index of the USI, for lookups without decryption
+  usiIndex         String?
+  studentId        String?
+  issuedAt         DateTime     @default(now())
+  expiresAt        DateTime?
+  jwt              String
+  statusListId     String
+  statusListIndex  Int
+  revokedAt        DateTime?
+  revocationReason String?
+  visibility       Visibility   @default(LINK)
+  claimedAt        DateTime?
+  viewCount        Int          @default(0)
+  evidenceUrl      String?
+  narrative        String?
+  batchId          String?
+  issuedById       String?
+  createdAt        DateTime     @default(now())
+
+  organization Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  achievement  Achievement         @relation(fields: [achievementId], references: [id])
+  recipient    User?               @relation("Recipient", fields: [recipientUserId], references: [id])
+  statusList   StatusList          @relation(fields: [statusListId], references: [id])
+  batch        IssuanceBatch?      @relation(fields: [batchId], references: [id])
+  events       VerificationEvent[]
+
+  @@unique([statusListId, statusListIndex])
+  @@index([organizationId, issuedAt])
+  @@index([recipientEmail])
+  @@index([usiIndex])
+}
+
+/// W3C Bitstring Status List (revocation). 131,072 entries per list (16 KiB).
+model StatusList {
+  id             String       @id @default(uuid())
+  organizationId String
+  purpose        String       @default("revocation")
+  size           Int          @default(131072)
+  bits           Bytes
+  nextIndex      Int          @default(0)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  credentials    Credential[]
+}
+
+model IssuanceBatch {
+  id             String       @id @default(uuid())
+  organizationId String
+  achievementId  String
+  createdById    String?
+  source         String
+  total          Int
+  succeeded      Int          @default(0)
+  failed         Int          @default(0)
+  errors         Json         @default("[]")
+  createdAt      DateTime     @default(now())
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  credentials    Credential[]
+}
+
+model Pathway {
+  id                  String        @id @default(uuid())
+  organizationId      String
+  name                String
+  description         String
+  rewardAchievementId String?
+  createdAt           DateTime      @default(now())
+  organization        Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  reward              Achievement?  @relation("PathwayReward", fields: [rewardAchievementId], references: [id])
+  steps               PathwayStep[]
+}
+
+model PathwayStep {
+  id            String      @id @default(uuid())
+  pathwayId     String
+  achievementId String
+  position      Int
+  pathway       Pathway     @relation(fields: [pathwayId], references: [id], onDelete: Cascade)
+  achievement   Achievement @relation(fields: [achievementId], references: [id], onDelete: Cascade)
+
+  @@unique([pathwayId, achievementId])
+}
+
+model ApiKey {
+  id             String       @id @default(uuid())
+  organizationId String
+  name           String
+  prefix         String       @unique
+  hash           String
+  scopes         String[]
+  createdById    String?
+  lastUsedAt     DateTime?
+  revokedAt      DateTime?
+  createdAt      DateTime     @default(now())
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+}
+
+model Webhook {
+  id             String       @id @default(uuid())
+  organizationId String
+  url            String
+  secretEnc      String
+  events         String[]
+  active         Boolean      @default(true)
+  lastStatus     Int?
+  createdAt      DateTime     @default(now())
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+}
+
+/// Append-only. The application never updates or deletes rows (enforce with DB grants in production).
+model AuditLog {
+  id             String        @id @default(uuid())
+  organizationId String?
+  actorUserId    String?
+  actorApiKeyId  String?
+  action         String
+  targetType     String?
+  targetId       String?
+  ip             String?
+  meta           Json          @default("{}")
+  createdAt      DateTime      @default(now())
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, createdAt])
+}
+
+model VerificationEvent {
+  id           String      @id @default(uuid())
+  credentialId String?
+  method       String
+  result       String
+  createdAt    DateTime    @default(now())
+  credential   Credential? @relation(fields: [credentialId], references: [id], onDelete: SetNull)
+
+  @@index([credentialId])
+}
+
+model RateLimit {
+  key         String   @id
+  count       Int
+  windowStart DateTime
+}
+
+model OutboxEmail {
+  id        String    @id @default(uuid())
+  to        String
+  subject   String
+  text      String
+  sentAt    DateTime?
+  createdAt DateTime  @default(now())
+}
+
+/// training.gov.au national register components (qualifications, units, skill sets).
+model TgaComponent {
+  code  String @id
+  title String
+  kind  String
+}

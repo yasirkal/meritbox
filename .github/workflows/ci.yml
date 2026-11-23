@@ -1,0 +1,39 @@
+name: CI
+on:
+  push: { branches: [main] }
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env: { POSTGRES_USER: meritbox, POSTGRES_PASSWORD: meritbox, POSTGRES_DB: meritbox }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U meritbox" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://meritbox:meritbox@localhost:5432/meritbox?schema=public
+      APP_URL: http://localhost:3000
+      MERITBOX_DEV_OUTBOX: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - run: echo "MERITBOX_MASTER_KEY=$(openssl rand -base64 32)" >> "$GITHUB_ENV"
+      - run: npx prisma migrate deploy
+      - run: npm run lint
+      - run: npm test
+      - run: npm audit --omit=dev --audit-level=high
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium && npm i --no-save playwright
+      - name: End-to-end smoke test
+        run: |
+          npm start > server.log 2>&1 &
+          npx wait-on http://localhost:3000/api/health --timeout 60000
+          node tests/e2e/smoke.mjs http://localhost:3000
+      - if: failure()
+        run: cat server.log

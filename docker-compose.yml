@@ -1,0 +1,35 @@
+# Local full-stack run: docker compose up --build   then   docker compose run --rm migrate
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: meritbox
+      POSTGRES_PASSWORD: meritbox
+      POSTGRES_DB: meritbox
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U meritbox"]
+      interval: 5s
+  app:
+    build: .
+    depends_on: { db: { condition: service_healthy } }
+    environment:
+      DATABASE_URL: postgresql://meritbox:meritbox@db:5432/meritbox?schema=public
+      APP_URL: http://localhost:3000
+      MERITBOX_MASTER_KEY: ${MERITBOX_MASTER_KEY:?set MERITBOX_MASTER_KEY (npm run gen:master-key)}
+      EMAIL_TRANSPORT: log
+    ports: ["3000:3000"]
+    read_only: true
+    tmpfs: [/tmp, /app/.next/cache]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+  migrate:
+    build: .
+    profiles: [tools]
+    depends_on: { db: { condition: service_healthy } }
+    environment:
+      DATABASE_URL: postgresql://meritbox:meritbox@db:5432/meritbox?schema=public
+    command: ["node", "node_modules/prisma/build/index.js", "migrate", "deploy"]
+volumes:
+  pgdata:
